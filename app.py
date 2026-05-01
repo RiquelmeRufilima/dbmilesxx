@@ -17,6 +17,8 @@ from typing import Optional, Tuple, Dict, Any, List
 # ============= IMPORTAÇÕES DO DATABASE.PY =============
 # ============= IMPORTAÇÕES DO DATABASE.PY (SIMPLIFICADA) =============
 # ============= IMPORTAÇÕES DO DATABASE.PY (VERSÃO MÍNIMA) =============
+# No início do app.py, depois dos imports, faça assim:
+
 try:
     from database import (
         criar_conexao,
@@ -37,7 +39,25 @@ try:
         PasswordHasher,
         login_manager
     )
+    # Importar funções adicionais separadamente
+    from database import (
+        criar_tabela_preferencias_tema,
+        adicionar_coluna_foto_perfil,
+        atualizar_perfil_usuario,
+        obter_dados_usuario,
+        salvar_preferencias_tema,
+        carregar_preferencias_tema
+    )
+    # Criar tabela de preferências de tema
+    criar_tabela_preferencias_tema()
+    # Adicionar coluna foto_perfil se não existir
+    adicionar_coluna_foto_perfil()
+    
 except ImportError as e:
+    st.error(f"Erro ao importar database: {e}")
+    # ... fallback ...
+    # ... resto do fallback
+
     st.error(f"Erro ao importar database: {e}")
     # Fallback - criar funções vazias para não quebrar
     def criar_conexao(): return None
@@ -961,6 +981,7 @@ def get_query_param(key, default=None):
             return value[0] if value else default
         return value
     return default
+
 def pagina_login_melhorada():
     """Página de login melhorada com abas, cadastro, recuperação de senha e segurança reforçada"""
     
@@ -1180,13 +1201,36 @@ def pagina_login_melhorada():
                                 st.session_state.usuario_id = resultado['usuario_id']
                                 st.session_state.usuario_nome = resultado['usuario_nome']
                                 st.session_state.usuario_email = resultado['usuario_email']
+                                st.session_state.empresa_id = resultado.get('empresa_id')
+                                st.session_state.nivel_acesso = resultado.get('nivel_acesso', 'membro')
                                 st.session_state.pagina = 'inicio'
                                 st.session_state.sessao_token = secrets.token_urlsafe(32)
                                 st.session_state.last_activity = time.time()
                                 st.session_state.session_start = time.time()
                                 st.session_state.csrf_token = security.generate_csrf_token()
                                 
-                                carregar_preferencias_usuario(resultado['usuario_id'])
+                                # ===== CARREGAR PREFERÊNCIAS DO BANCO (CORRIGIDO) =====
+                                prefs = carregar_preferencias_usuario(resultado['usuario_id'])
+                                if prefs:
+                                    st.session_state.tema = prefs['tema_preferido']
+                                    st.session_state.moeda = prefs['moeda_preferida']
+                                    st.session_state.cor_primaria = prefs['cor_primaria']
+                                    st.session_state.foto_perfil = prefs.get('foto_perfil')
+                                    st.session_state.telefone = prefs.get('telefone')
+                                    st.session_state.cargo = prefs.get('cargo')
+                                else:
+                                    st.session_state.tema = "escuro"
+                                    st.session_state.moeda = "BRL"
+                                    st.session_state.cor_primaria = '#3d8bfd'
+                                
+                                # Salvar preferências atuais no banco
+                                from database import salvar_preferencias_usuario
+                                salvar_preferencias_usuario(
+                                    resultado['usuario_id'],
+                                    tema=st.session_state.tema,
+                                    moeda=st.session_state.moeda,
+                                    cor_primaria=st.session_state.cor_primaria
+                                )
                                 
                                 registrar_evento_seguranca(
                                     resultado['usuario_id'],
@@ -1327,7 +1371,6 @@ def pagina_login_melhorada():
                         st.rerun()
                 
                 if submit_rec:
-                    # ===== LINHA CORRIGIDA =====
                     if not email_rec or not security.validate_email(email_rec):
                         st.error("❌ Email inválido!")
                     else:
@@ -1406,7 +1449,6 @@ def pagina_login_melhorada():
         v3.0.0 • Ambiente {'🌐 Cloud' if os.getenv('STREAMLIT_CLOUD') else '💻 Local'} • Segurança Nível A+
     </div>
     """, unsafe_allow_html=True)
-
 
 def validar_forca_senha(senha: str) -> Dict[str, Any]:
     """Valida força da senha (wrapper seguro)"""
@@ -1971,8 +2013,9 @@ def pagina_inicio():
             """)
     
     st.markdown("</div>", unsafe_allow_html=True)
+
 def pagina_nova_cotacao():
-    """Página para criar nova cotação - VERSÃO CORRIGIDA"""
+    """Página para criar nova cotação - COM PRESERVAÇÃO DE VALORES AO ALTERAR"""
     from datetime import datetime, date, timedelta
     
     cores = get_colors()
@@ -2011,6 +2054,14 @@ def pagina_nova_cotacao():
         </div>
         """, unsafe_allow_html=True)
     
+    # Botão para cancelar alteração e voltar
+    if st.session_state.get('cotacao_atual', 0) != 0:
+        col_cancelar, _ = st.columns([1, 5])
+        with col_cancelar:
+            if st.button("❌ Cancelar Alteração", use_container_width=True, type="secondary"):
+                st.session_state.pagina = 'companhias'
+                st.rerun()
+    
     st.markdown(f"""
     <div class='config-card fade-in'>
         <h4 style='color: {cores['destaque']}; margin-bottom: 1rem;'>📝 Informe os dados básicos da cotação</h4>
@@ -2018,17 +2069,17 @@ def pagina_nova_cotacao():
     </div>
     """, unsafe_allow_html=True)
     
-    # ===== INICIALIZAR ESTADOS =====
+    # INICIALIZAR ESTADOS
     if 'tipo_viagem_radio' not in st.session_state:
         st.session_state.tipo_viagem_radio = "🔄 Ida e Volta"
     
     if 'mostrar_data_volta' not in st.session_state:
         st.session_state.mostrar_data_volta = True
     
-    # ===== FORMULÁRIO =====
-    with st.form(key="form_nova_cotacao"):  # <--- Adicionar key explícita
+    with st.form(key="form_nova_cotacao"):
         
-        # Nome da cotação
+        # Nome da cotação - PRESERVAR VALOR EXISTENTE
+        nome_atual = st.session_state.get('nome_cotacao', '')
         nome_padrao = ""
         if preencher_automaticamente:
             nome_padrao = f"Cotação para {solicitacao['nome_cliente']} - {solicitacao['data_ida']}"
@@ -2037,42 +2088,56 @@ def pagina_nova_cotacao():
             "**📝 Nome/Identificador da Cotação**",
             placeholder="Ex: Viagem família - Junho 2024",
             help="Dê um nome descritivo para sua cotação",
-            value=nome_padrao
+            value=nome_atual if nome_atual and not preencher_automaticamente else nome_padrao,
+            key="nome_cotacao_input"
         )
         
-        # Origem e Destino
+        # Origem e Destino - PRESERVAR VALORES EXISTENTES
+        origem_atual = st.session_state.get('origem', '')
+        destino_atual = st.session_state.get('destino', '')
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            origem_padrao = solicitacao['origem'] if preencher_automaticamente else ""
+            origem_padrao = solicitacao['origem'] if preencher_automaticamente else origem_atual
             origem = st.text_input(
                 "**📍 Origem**",
                 placeholder="Ex: GRU (São Paulo)",
                 help="Aeroporto ou cidade de origem",
-                value=origem_padrao
+                value=origem_padrao,
+                key="origem_input"
             )
         
         with col2:
-            destino_padrao = solicitacao['destino'] if preencher_automaticamente else ""
+            destino_padrao = solicitacao['destino'] if preencher_automaticamente else destino_atual
             destino = st.text_input(
                 "**🎯 Destino**",
                 placeholder="Ex: JFK (Nova York)",
                 help="Aeroporto ou cidade de destino",
-                value=destino_padrao
+                value=destino_padrao,
+                key="destino_input"
             )
         
         st.markdown("---")
         st.markdown("### ✈️ Tipo de Viagem")
         
-        # ===== TIPO DE VIAGEM (sem callback complexo) =====
+        # TIPO DE VIAGEM - PRESERVAR VALOR EXISTENTE
+        tipo_atual = st.session_state.get('tipo_viagem', 'Ida e Volta')
+        tipo_map_reverse = {
+            "Ida e Volta": "🔄 Ida e Volta",
+            "Somente Ida": "⬆️ Somente Ida",
+            "Multitrecho": "🔁 Multitrecho"
+        }
+        tipo_radio_atual = tipo_map_reverse.get(tipo_atual, "🔄 Ida e Volta")
+        
         tipo_viagem = st.radio(
             "**Selecione o tipo de viagem:**",
             options=["🔄 Ida e Volta", "⬆️ Somente Ida", "🔁 Multitrecho"],
             horizontal=True,
-            key="tipo_viagem_radio"
+            key="tipo_viagem_radio",
+            index=["🔄 Ida e Volta", "⬆️ Somente Ida", "🔁 Multitrecho"].index(tipo_radio_atual)
         )
         
-        # Mapear para valor simplificado
         tipo_viagem_map = {
             "🔄 Ida e Volta": "Ida e Volta",
             "⬆️ Somente Ida": "Somente Ida",
@@ -2080,61 +2145,71 @@ def pagina_nova_cotacao():
         }
         tipo_viagem_valor = tipo_viagem_map[tipo_viagem]
         
-        # ===== DATAS =====
+        # DATAS
         with st.expander("📅 Datas do Voo (Opcional)", expanded=preencher_automaticamente):
             
-            # Data atual para referência
             hoje = datetime.now().date()
+            hoje_para_comparacao = date(hoje.year, hoje.month, hoje.day)
             
             col_data1, col_data2 = st.columns(2)
             
             with col_data1:
-                # Data de Ida
+                # Data de Ida - PRESERVAR VALOR EXISTENTE
+                data_ida_atual = st.session_state.get('data_ida_para_cotacao')
                 data_ida_padrao = None
+                
                 if preencher_automaticamente and 'data_ida' in solicitacao:
                     try:
                         dia, mes, ano = map(int, solicitacao['data_ida'].split('/'))
                         data_ida_padrao = date(ano, mes, dia)
                     except:
                         data_ida_padrao = None
+                elif data_ida_atual:
+                    try:
+                        data_ida_padrao = datetime.strptime(data_ida_atual, '%d/%m/%Y').date()
+                    except:
+                        data_ida_padrao = None
                 
                 data_ida = st.date_input(
                     "📅 Data de Ida",
                     value=data_ida_padrao,
-                    min_value=hoje,  # Bloquear datas passadas
+                    min_value=None,  # Removido min_value para permitir datas passadas
                     key="data_ida_input"
                 )
             
             with col_data2:
-                # Data de Volta - só aparece se não for somente ida
                 if tipo_viagem_valor != "Somente Ida":
+                    data_volta_atual = st.session_state.get('data_volta_para_cotacao')
                     data_volta_padrao = None
+                    
                     if preencher_automaticamente and 'data_volta' in solicitacao:
                         try:
                             dia, mes, ano = map(int, solicitacao['data_volta'].split('/'))
                             data_volta_padrao = date(ano, mes, dia)
                         except:
                             data_volta_padrao = None
-                    
-                    # Data mínima para volta é a data de ida + 1 dia (se data de ida existir)
-                    min_volta = hoje
-                    if data_ida and isinstance(data_ida, date):
-                        min_volta = data_ida + timedelta(days=1)
+                    elif data_volta_atual:
+                        try:
+                            data_volta_padrao = datetime.strptime(data_volta_atual, '%d/%m/%Y').date()
+                        except:
+                            data_volta_padrao = None
                     
                     data_volta = st.date_input(
                         "📅 Data de Volta",
                         value=data_volta_padrao,
-                        min_value=min_volta,  # Bloquear datas antes da ida
+                        min_value=None,  # Removido min_value para permitir datas passadas
                         key="data_volta_input"
                     )
                 else:
+                    data_volta = None
                     st.info("ℹ️ Data de volta não disponível para viagens somente ida")
         
-        # ===== PASSAGEIROS E BAGAGENS =====
+        # PASSAGEIROS E BAGAGENS - PRESERVAR VALORES EXISTENTES
         with st.expander("👥 Configurações de Passageiros e Bagagens", expanded=preencher_automaticamente):
             col_pass1, col_pass2, col_pass3 = st.columns(3)
             
             with col_pass1:
+                passageiros_atual = st.session_state.get('passageiros_para_cotacao', 1)
                 passageiros_total = 0
                 if preencher_automaticamente and solicitacao:
                     passageiros_total = solicitacao['passageiros'].get('adultos', 0) + solicitacao['passageiros'].get('criancas', 0)
@@ -2144,12 +2219,13 @@ def pagina_nova_cotacao():
                     min_value=1,
                     max_value=20,
                     step=1,
-                    value=passageiros_total if passageiros_total > 0 else 1,
+                    value=passageiros_total if preencher_automaticamente and passageiros_total > 0 else passageiros_atual,
                     help="Total de passageiros pagantes (adultos + crianças)",
                     key="passageiros_total_input"
                 )
             
             with col_pass2:
+                bebes_atual = st.session_state.get('bebes_para_cotacao', 0)
                 bebes_padrao = 0
                 if preencher_automaticamente and solicitacao:
                     bebes_padrao = solicitacao['passageiros'].get('bebes', 0)
@@ -2159,16 +2235,17 @@ def pagina_nova_cotacao():
                     min_value=0,
                     max_value=10,
                     step=1,
-                    value=bebes_padrao,
+                    value=bebes_padrao if preencher_automaticamente else bebes_atual,
                     help="Bebês não pagam passagem, apenas taxas",
                     key="bebes_input"
                 )
             
             with col_pass3:
+                bagagens_atual = st.session_state.get('bagagens_para_cotacao', 0)
                 num_bagagens = 0
                 if preencher_automaticamente and solicitacao and solicitacao.get('bagagens'):
                     try:
-                        num_bagagens = int(solicitacao['bagagens'].split()[0])
+                        num_bagagens = int(solicitacao['bagagens'])
                     except:
                         num_bagagens = 1
                 
@@ -2177,12 +2254,11 @@ def pagina_nova_cotacao():
                     min_value=0,
                     max_value=20,
                     step=1,
-                    value=num_bagagens,
+                    value=num_bagagens if preencher_automaticamente and num_bagagens > 0 else bagagens_atual,
                     help="Número total de bagagens despachadas",
                     key="bagagens_input"
                 )
         
-        # Dicas
         with st.expander("💡 Dicas para uma boa cotação", expanded=False):
             st.markdown("""
             - Use nomes descritivos que ajudem a identificar a cotação depois
@@ -2194,29 +2270,20 @@ def pagina_nova_cotacao():
         
         st.markdown("---")
         
-        # ===== BOTÃO DE SUBMIT DENTRO DO FORMULÁRIO =====
         col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
         with col_btn2:
             submit = st.form_submit_button("💾 Salvar e Continuar", type="primary", use_container_width=True)
     
-    # ===== PROCESSAMENTO APÓS O FORMULÁRIO =====
     if submit:
         if not all([nome_cotacao, origem, destino]):
             st.error("❌ Preencha todos os campos obrigatórios (Nome, Origem e Destino)!")
         else:
             with st.spinner("💾 Salvando cotação..."):
                 
-                # Validar datas (opcional)
-                if data_ida and data_ida < hoje:
-                    st.error("❌ A data de ida não pode ser no passado!")
-                    st.stop()
-                
-                if 'data_volta' in locals() and data_volta:
-                    if data_volta < hoje:
-                        st.error("❌ A data de volta não pode ser no passado!")
-                        st.stop()
-                    if data_ida and data_volta <= data_ida:
-                        st.error("❌ A data de volta deve ser após a data de ida!")
+                # Validar apenas se a data de volta é anterior à data de ida (apenas se ambas existirem)
+                if data_ida and data_volta:
+                    if data_volta < data_ida:
+                        st.error("❌ A data de volta não pode ser anterior à data de ida!")
                         st.stop()
                 
                 # Salvar todos os dados na sessão
@@ -2227,35 +2294,64 @@ def pagina_nova_cotacao():
                 
                 if data_ida:
                     st.session_state.data_ida_para_cotacao = data_ida.strftime('%d/%m/%Y')
-                
-                if 'data_volta' in locals() and data_volta and tipo_viagem_valor != "Somente Ida":
-                    st.session_state.data_volta_para_cotacao = data_volta.strftime('%d/%m/%Y')
-                
-                # Criar cotação no banco
-                sucesso, resultado = criar_cotacao(
-                    st.session_state.usuario_id,
-                    nome_cotacao,
-                    origem,
-                    destino
-                )
-                
-                if sucesso:
-                    st.session_state.cotacao_atual = resultado
-                    st.session_state.nome_cotacao = nome_cotacao
-                    st.session_state.origem = origem
-                    st.session_state.destino = destino
-                    
-                    # Limpar dados da solicitação se existir
-                    if 'solicitacao_para_cotacao' in st.session_state:
-                        del st.session_state.solicitacao_para_cotacao
-                    
-                    st.success("✅ Cotação criada com sucesso!")
-                    st.info("👉 Agora selecione uma companhia para calcular os valores.")
-                    time.sleep(1)
-                    st.session_state.pagina = 'companhias'
-                    st.rerun()
                 else:
-                    st.error(f"❌ {resultado}")
+                    st.session_state.data_ida_para_cotacao = None
+                
+                if data_volta and tipo_viagem_valor != "Somente Ida":
+                    st.session_state.data_volta_para_cotacao = data_volta.strftime('%d/%m/%Y')
+                else:
+                    st.session_state.data_volta_para_cotacao = None
+                
+                # Se já existe uma cotação (modo edição), atualizar em vez de criar nova
+                if st.session_state.get('cotacao_atual', 0) != 0:
+                    # Atualizar cotação existente no banco
+                    try:
+                        conn = criar_conexao()
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                        UPDATE cotacoes 
+                        SET nome = ?, origem = ?, destino = ? 
+                        WHERE id = ? AND usuario_id = ?
+                        ''', (nome_cotacao, origem, destino, st.session_state.cotacao_atual, st.session_state.usuario_id))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.session_state.nome_cotacao = nome_cotacao
+                        st.session_state.origem = origem
+                        st.session_state.destino = destino
+                        
+                        st.success("✅ Cotação atualizada com sucesso!")
+                        st.info("👉 Agora selecione uma companhia para calcular os valores.")
+                        time.sleep(1)
+                        st.session_state.pagina = 'companhias'
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao atualizar: {str(e)}")
+                else:
+                    # Criar nova cotação
+                    sucesso, resultado = criar_cotacao(
+                        st.session_state.usuario_id,
+                        nome_cotacao,
+                        origem,
+                        destino
+                    )
+                    
+                    if sucesso:
+                        st.session_state.cotacao_atual = resultado
+                        st.session_state.nome_cotacao = nome_cotacao
+                        st.session_state.origem = origem
+                        st.session_state.destino = destino
+                        
+                        if 'solicitacao_para_cotacao' in st.session_state:
+                            del st.session_state.solicitacao_para_cotacao
+                        
+                        st.success("✅ Cotação criada com sucesso!")
+                        st.info("👉 Agora selecione uma companhia para calcular os valores.")
+                        time.sleep(1)
+                        st.session_state.pagina = 'companhias'
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {resultado}")
                     
 def criar_nova_cotacao_manual():
     """Limpa dados e prepara para nova cotação manual"""
@@ -2278,19 +2374,32 @@ def criar_nova_cotacao_manual():
     st.rerun()
 
 def pagina_companhias():
-    """Página para selecionar companhia aérea"""
+    """Página para selecionar companhia aérea COM BOTÃO ALTERAR COTAÇÃO"""
     cores = get_colors()
     
     if not hasattr(st.session_state, 'cotacao_atual') or st.session_state.cotacao_atual == 0:
         st.warning("⚠️ Crie uma cotação primeiro!")
-        st.session_state.pagina = 'nova_cotacao'
-        st.rerun()
+        
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+        with col_btn2:
+            if st.button("📋 Criar Nova Cotação", type="primary", use_container_width=True):
+                st.session_state.pagina = 'nova_cotacao'
+                st.rerun()
+        return
     
     st.title(f"✈️ Selecione uma Companhia Aérea")
     
+    # ===== BOTÃO ALTERAR COTAÇÃO =====
+    col_alterar, col_vazio = st.columns([1, 4])
+    with col_alterar:
+        if st.button("✏️ Alterar Cotação", type="secondary", use_container_width=True, key="btn_alterar_cotacao"):
+            st.session_state.pagina = 'nova_cotacao'
+            st.rerun()
+    
+    # Mostrar dados da cotação atual COM DATAS
     st.markdown(f"""
     <div class='config-card fade-in'>
-        <div style='display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem;'>
+        <div style='display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; flex-wrap: wrap;'>
             <div style='background: {cores['destaque']}20; padding: 8px 12px; border-radius: 8px;'>
                 📋
             </div>
@@ -2299,8 +2408,15 @@ def pagina_companhias():
                 <p style='margin: 0.25rem 0 0 0; color: {cores['texto']}80;'>
                     <strong>📍 Rota:</strong> {st.session_state.origem} → {st.session_state.destino}
                 </p>
-            </div>
-        </div>
+                <p style='margin: 0.25rem 0 0 0; color: {cores['texto']}80;'>
+                    <strong>👥 Passageiros:</strong> {st.session_state.get('passageiros_para_cotacao', 1)} adultos, 
+                    {st.session_state.get('bebes_para_cotacao', 0)} bebês
+                </p>
+                <p style='margin: 0.25rem 0 0 0; color: {cores['texto']}80;'>
+                    <strong>📅 Datas:</strong> 
+                    {'Ida: ' + st.session_state.get('data_ida_para_cotacao', '') if st.session_state.get('data_ida_para_cotacao') else 'Sem data definida'}
+                    {' • Volta: ' + st.session_state.get('data_volta_para_cotacao', '') if st.session_state.get('data_volta_para_cotacao') else ''}
+                    {'' if st.session_state.get('data_ida_para_cotacao') or st.session_state.get('data_volta_para_cotacao') else '(Sem data definida)'}
     </div>
     """, unsafe_allow_html=True)
     
@@ -2359,12 +2475,17 @@ def pagina_companhias():
         - Verifique as taxas e condições de bagagem
         - Programas de fidelidade têm regras diferentes
         """)
-
 # ===== SUBSTITUA a função pagina_calculadora() inteira =====
 
 def pagina_calculadora():
-    """Página da calculadora - VERSÃO CORRIGIDA"""
+    """Página da calculadora - COM CUSTO ADICIONAL NOMEÁVEL"""
     cores = get_colors()
+    
+    # Inicializar estado para custo adicional
+    if 'custo_adicional_nome' not in st.session_state:
+        st.session_state.custo_adicional_nome = ""
+    if 'custo_adicional_valor' not in st.session_state:
+        st.session_state.custo_adicional_valor = 0.0
     
     if 'companhia_selecionada' not in st.session_state or not st.session_state.companhia_selecionada:
         st.warning("⚠️ Selecione uma companhia primeiro!")
@@ -2390,7 +2511,6 @@ def pagina_calculadora():
     destino = st.session_state.get('destino', '')
     companhia_display = st.session_state.get('companhia_display', 'Companhia Aérea')
     
-    # ===== NOVO: Buscar dados de viagem =====
     tipo_viagem = st.session_state.get('tipo_viagem', 'Ida e Volta')
     data_ida = st.session_state.get('data_ida_para_cotacao', 'Não informada')
     data_volta = st.session_state.get('data_volta_para_cotacao', 'Não informada')
@@ -2422,7 +2542,17 @@ def pagina_calculadora():
     </div>
     """, unsafe_allow_html=True)
     
-    # INICIALIZAR resultado_calculo SE NÃO EXISTIR
+    # Botão para voltar e alterar cotação
+    col_back1, col_back2, col_back3 = st.columns([1, 1, 2])
+    with col_back1:
+        if st.button("← Voltar para Companhias", use_container_width=True, type="secondary"):
+            st.session_state.pagina = 'companhias'
+            st.rerun()
+    with col_back2:
+        if st.button("✏️ Alterar Cotação", use_container_width=True, type="secondary"):
+            st.session_state.pagina = 'nova_cotacao'
+            st.rerun()
+    
     if 'resultado_calculo' not in st.session_state or st.session_state.resultado_calculo is None:
         st.session_state.resultado_calculo = {}
     
@@ -2481,7 +2611,6 @@ def pagina_calculadora():
             )
         
         with col3:
-            # ===== CORRIGIDO: Apenas um campo de bagagens (bagagens adicionais) =====
             num_bagagens = st.number_input(
                 f"**🧳 Bagagens adicionais**",
                 min_value=0,
@@ -2490,6 +2619,29 @@ def pagina_calculadora():
                 value=bagagens_padrao,
                 help="Número de bagagens adicionais (além das inclusas, se houver)",
                 key="bagagens"
+            )
+        
+        # ===== NOVO: CUSTO ADICIONAL NOMEÁVEL =====
+        st.markdown("### 💰 Custos Adicionais")
+        
+        col_custo1, col_custo2 = st.columns(2)
+        with col_custo1:
+            custo_adicional_nome = st.text_input(
+                "**Nome do custo adicional (opcional)**",
+                placeholder="Ex: Taxa de serviço, seguro, etc.",
+                key="custo_adicional_nome_input",
+                value=st.session_state.get('custo_adicional_nome', '')
+            )
+        
+        with col_custo2:
+            custo_adicional_valor = st.number_input(
+                f"**Valor do custo adicional ({simbolo})**",
+                min_value=0.00,
+                max_value=1000000.0,
+                step=10.0,
+                value=st.session_state.get('custo_adicional_valor', 0.0),
+                format="%.2f",
+                key="custo_adicional_valor_input"
             )
         
         st.markdown(f"### 💰 Configurações {st.session_state.companhia_display}")
@@ -2694,7 +2846,7 @@ def pagina_calculadora():
                 desconto_porcentagem = 0
             else:
                 tipo_calculo = "AZUL - PONTOS + DINHEIRO"
-                desconto_taxa = 0.05  # 5% de desconto
+                desconto_taxa = 0.05
                 desconto_porcentagem = 5
             
             st.markdown(f"""
@@ -2770,19 +2922,20 @@ def pagina_calculadora():
                 key="btn_calcular_cotacao"
             )
     
-        # ===== PROCESSAR CÁLCULO =====
     if calcular:
         try:
-            # Cálculo base
+            # Salvar custo adicional na sessão
+            if custo_adicional_nome and custo_adicional_valor > 0:
+                st.session_state.custo_adicional_nome = custo_adicional_nome
+                st.session_state.custo_adicional_valor = custo_adicional_valor
+            
             valor_base = 0
             valor_bagagens_total = 0
             desagio_percentual = 0
             
-            # ===== LATAM (ÚNICA QUE MULTIPLICA TAXA) =====
             if companhia == "latam":
-                # LATAM: taxa é POR PASSAGEIRO (multiplica)
                 valor_milhas = (milhas_total * valor_milheiro) * passageiros
-                valor_taxas = taxa_embarque * passageiros  # <--- MULTIPLICA
+                valor_taxas = taxa_embarque * passageiros
                 valor_base = valor_milhas + valor_taxas
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
                 
@@ -2798,98 +2951,59 @@ def pagina_calculadora():
                     'bagagens_adicionais': num_bagagens
                 }
             
-            # ===== GOL - SMILES (taxa NÃO multiplica) =====
             elif companhia == "gol" and tipo_gol == "💎 Smiles (Milhas)":
-                # GOL: taxa é TOTAL (já para todos)
                 valor_milhas = milhas_total * valor_milheiro
-                valor_taxas = taxa_embarque  # <--- NÃO multiplica
+                valor_taxas = taxa_embarque
                 valor_base = valor_milhas + valor_taxas
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
-                
                 tipo_calculo = "GOL - SMILES"
-                
                 st.session_state.resultado_calculo = {}
-                st.session_state.resultado_calculo['dados_sql'] = {
-                    'milhas_total': milhas_total,
-                    'tipo_calculo': tipo_calculo
-                }
+                st.session_state.resultado_calculo['dados_sql'] = {'milhas_total': milhas_total, 'tipo_calculo': tipo_calculo}
             
-            # ===== GOL - DESÁGIO (taxa NÃO multiplica) =====
             elif companhia == "gol" and tipo_gol == "💰 Deságio":
-                # GOL Deságio: taxa já está inclusa no valor cheio
                 desconto = valor_gol * (desagio / 100)
                 valor_base = valor_gol - desconto
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
-                
                 tipo_calculo = "GOL - DESAGIO"
-                
                 st.session_state.resultado_calculo = {}
-                st.session_state.resultado_calculo['dados_sql'] = {
-                    'valor_gol_original': valor_gol,
-                    'desagio': desagio,
-                    'tipo_calculo': tipo_calculo
-                }
+                st.session_state.resultado_calculo['dados_sql'] = {'valor_gol_original': valor_gol, 'desagio': desagio, 'tipo_calculo': tipo_calculo}
             
-            # ===== AZUL - PONTOS (taxa NÃO multiplica) =====
             elif companhia == "azul" and tipo_azul == "🔵 Pontos TudoAzul":
-                # AZUL: taxa é TOTAL
                 valor_pontos = milhas_total * valor_milheiro
-                valor_taxas = taxa_embarque  # <--- NÃO multiplica
+                valor_taxas = taxa_embarque
                 valor_base = valor_pontos + valor_taxas
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
-                
                 tipo_calculo = "AZUL - PONTOS"
-                
                 st.session_state.resultado_calculo = {}
-                st.session_state.resultado_calculo['dados_sql'] = {
-                    'milhas_total': milhas_total,
-                    'tipo_calculo': tipo_calculo
-                }
+                st.session_state.resultado_calculo['dados_sql'] = {'milhas_total': milhas_total, 'tipo_calculo': tipo_calculo}
             
-            # ===== AZUL - PONTOS + DINHEIRO (taxa NÃO multiplica) =====
             elif companhia == "azul" and tipo_azul == "💵 Pontos + Dinheiro (5% OFF taxa)":
-                # AZUL com desconto: taxa TOTAL com 5% OFF
                 valor_pontos = milhas_total * valor_milheiro
-                valor_taxas_com_desconto = taxa_embarque * 0.95  # <--- NÃO multiplica, só aplica 5%
+                valor_taxas_com_desconto = taxa_embarque * 0.95
                 valor_base = valor_pontos + valor_taxas_com_desconto
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
                 desconto_aplicado = taxa_embarque * 0.05
-                
                 tipo_calculo = "AZUL - PONTOS + DINHEIRO"
-                
                 st.session_state.resultado_calculo = {}
-                st.session_state.resultado_calculo.update({
-                    'desconto_taxa_aplicado': desconto_aplicado,
-                    'taxa_original': taxa_embarque,
-                    'taxa_com_desconto': taxa_embarque * 0.95
-                })
-                st.session_state.resultado_calculo['dados_sql'] = {
-                    'milhas_total': milhas_total,
-                    'tipo_calculo': tipo_calculo,
-                    'desconto_taxa': desconto_aplicado
-                }
+                st.session_state.resultado_calculo.update({'desconto_taxa_aplicado': desconto_aplicado, 'taxa_original': taxa_embarque, 'taxa_com_desconto': taxa_embarque * 0.95})
+                st.session_state.resultado_calculo['dados_sql'] = {'milhas_total': milhas_total, 'tipo_calculo': tipo_calculo, 'desconto_taxa': desconto_aplicado}
             
-            # ===== AMERICAN (taxa NÃO multiplica) =====
             elif companhia == "american":
-                # AMERICAN: taxa é TOTAL
                 valor_milhas = milhas_total * valor_milheiro
-                valor_taxas = taxa_embarque  # <--- NÃO multiplica
+                valor_taxas = taxa_embarque
                 valor_base = valor_milhas + valor_taxas
                 valor_bagagens_total = num_bagagens * valor_bagagem_unitaria
-                
                 tipo_calculo = f"AMERICAN - {rota}"
-                
                 st.session_state.resultado_calculo = {}
-                st.session_state.resultado_calculo['dados_sql'] = {
-                    'milhas_total': milhas_total,
-                    'tipo_calculo': tipo_calculo,
-                    'rota': rota
-                }
+                st.session_state.resultado_calculo['dados_sql'] = {'milhas_total': milhas_total, 'tipo_calculo': tipo_calculo, 'rota': rota}
             
-            # TOTAL GERAL
             total_geral = valor_base + valor_bagagens_total
             
-            # Atualizar resultado_calculo com todos os dados
+            # Adicionar custo adicional se existir
+            if custo_adicional_valor > 0 and custo_adicional_nome:
+                total_geral += custo_adicional_valor
+                tipo_calculo += f" + {custo_adicional_nome}"
+            
             st.session_state.resultado_calculo.update({
                 'companhia': st.session_state.companhia_display,
                 'tipo_calculo': tipo_calculo,
@@ -2904,13 +3018,14 @@ def pagina_calculadora():
                 'desagio_percentual': desagio if 'desagio' in locals() else 0,
                 'valor_base': valor_base,
                 'valor_bagagens_total': valor_bagagens_total,
+                'custo_adicional_nome': custo_adicional_nome if custo_adicional_valor > 0 else None,
+                'custo_adicional_valor': custo_adicional_valor if custo_adicional_valor > 0 else 0,
                 'total_geral': total_geral,
                 'simbolo': simbolo,
                 'data_hora': datetime.now().strftime("%d/%m/%Y %H:%M"),
                 'dados_sql': st.session_state.resultado_calculo.get('dados_sql', {})
             })
             
-            # Adicionar dados da viagem
             st.session_state.resultado_calculo['tipo_viagem'] = tipo_viagem
             st.session_state.resultado_calculo['data_ida'] = data_ida
             st.session_state.resultado_calculo['data_volta'] = data_volta
@@ -2921,6 +3036,8 @@ def pagina_calculadora():
         except Exception as e:
             st.error(f"❌ Erro ao calcular: {str(e)}")
             logger.error(f"Erro na calculadora: {e}")
+    
+    # ... (restante da função pagina_calculadora continua igual - mostrar resultado)
             st.exception(e)  # Mostrar stack trace completo para debug
     
     # ===== MOSTRAR RESULTADO =====
@@ -4274,7 +4391,7 @@ def get_currency_symbol(moeda: str) -> str:
     """Wrapper para símbolo da moeda"""
     simbolos = {"BRL": "R$", "USD": "$", "EUR": "€", "GBP": "£"}
     return simbolos.get(moeda, "R$")
-    
+
 def main():
     """Função principal da aplicação"""
     aplicar_tema_atual()
@@ -4284,7 +4401,14 @@ def main():
         try:
             reparar_tabela_usuarios()
             inicializar_tabela_tokens()
-            inicializar_tabelas_solicitacoes()  # Tabelas do módulo de solicitações
+            inicializar_tabelas_solicitacoes()
+            
+            # Adicionar colunas faltantes
+            from database import adicionar_coluna_updated_at, adicionar_coluna_data_atualizacao_cotacoes
+            adicionar_coluna_updated_at()
+            adicionar_coluna_data_atualizacao_cotacoes()
+            adicionar_coluna_foto_perfil()
+            
             st.session_state.banco_verificado = True
         except Exception as e:
             logger.error(f"Erro na verificação do banco: {e}")
@@ -4465,11 +4589,28 @@ def main():
     else:
         with st.sidebar:
             cores = get_colors()
-            logo_base64 = carregar_logo()
             
+            # Carregar foto de perfil do usuário se existir
+            foto_perfil = st.session_state.get('foto_perfil')
+            
+            # Mostrar foto de perfil ou logo padrão
+            if foto_perfil:
+                st.markdown(f"""
+                <div style='text-align: center; margin-bottom: 1rem;'>
+                    <img src="{foto_perfil}" style='width: 120px; height: 120px; border-radius: 50%; object-fit: cover; border: 3px solid {cores['destaque']}; margin-bottom: 0.5rem;'>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                logo_base64 = carregar_logo()
+                st.markdown(f"""
+                <div style='text-align: center; margin-bottom: 1rem;'>
+                    <img src="data:image/png;base64,{logo_base64}" style='max-width: 120px; margin-bottom: 0.5rem; border-radius: 15px;'>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Nome e email do usuário
             st.markdown(f"""
             <div class='fade-in' style='text-align: center; margin-bottom: 1.5rem;'>
-                <img src="data:image/png;base64,{logo_base64}" style="max-width: 120px; margin-bottom: 0.5rem;">
                 <h3 style='color: {cores['destaque']}; margin-bottom: 0.25rem;'>👤 {st.session_state.usuario_nome}</h3>
                 <p style='color: {cores['texto']}70; font-size: 0.9rem; margin-bottom: 0.25rem;'>✉️ {st.session_state.usuario_email}</p>
                 <div style='background: {cores['success']}20; padding: 5px 10px; border-radius: 5px; margin-top: 5px;'>
@@ -4522,11 +4663,11 @@ def main():
                 
                 st.markdown(f"""
                 <div style='font-size: 0.85rem;'>
-                <p><strong>🔒 Nível de segurança:</strong> {st.session_state.security_level}</p>
-                <p><strong>⏱️ Tempo restante:</strong> {minutos_restantes}:{segundos_restantes:02d}</p>
-                <p><strong>📅 Sessão iniciada:</strong> {datetime.fromtimestamp(st.session_state.session_start).strftime('%H:%M')}</p>
-                <p><strong>🔑 Criptografia:</strong> bcrypt (14 rounds)</p>
-                <p><strong>🆔 Sessão ID:</strong> {st.session_state.get('sessao_token', 'N/A')[:8]}...</p>
+                    <p><strong>🔒 Nível de segurança:</strong> {st.session_state.security_level}</p>
+                    <p><strong>⏱️ Tempo restante:</strong> {minutos_restantes}:{segundos_restantes:02d}</p>
+                    <p><strong>📅 Sessão iniciada:</strong> {datetime.fromtimestamp(st.session_state.session_start).strftime('%H:%M')}</p>
+                    <p><strong>🔑 Criptografia:</strong> bcrypt (14 rounds)</p>
+                    <p><strong>🆔 Sessão ID:</strong> {st.session_state.get('sessao_token', 'N/A')[:8]}...</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -4538,6 +4679,7 @@ def main():
             
             st.markdown("---")
             
+            # Botão de logout
             if st.button("🚪 Sair do Sistema", type="secondary", use_container_width=True, key="sidebar_sair_unique"):
                 with st.spinner("Saindo..."):
                     usuario_id = st.session_state.get('usuario_id')
@@ -4551,8 +4693,18 @@ def main():
                             "INFO"
                         )
                     
+                    # Salvar preferências atuais antes de sair
+                    from database import salvar_preferencias_usuario
+                    salvar_preferencias_usuario(
+                        usuario_id,
+                        tema=st.session_state.get('tema', 'escuro'),
+                        moeda=st.session_state.get('moeda', 'BRL'),
+                        cor_primaria=st.session_state.get('cor_primaria', '#3d8bfd')
+                    )
+                    
                     csrf_salvo = st.session_state.get('csrf_token')
                     
+                    # Limpar sessão (mas dados já foram salvos no banco)
                     for key in list(st.session_state.keys()):
                         del st.session_state[key]
                     
