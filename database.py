@@ -1545,95 +1545,98 @@ def aceitar_convite(token: str, senha: str) -> Tuple[bool, str]:
         return False, str(e)
 
 # ============= FUNÇÕES DE USUÁRIOS =============
-def carregar_preferencias_usuario(usuario_id: int):
-    """Carrega preferências do usuário do banco"""
+def salvar_preferencias_tema(usuario_id: int, tema_id: str, modo: str, cores_json: str):
+    """Salva as preferências de tema do usuário no banco de dados"""
     try:
-        with get_db_cursor() as cursor:
-            cursor.execute(
-                'SELECT tema_preferido, moeda_preferida, cor_primaria, tema_personalizado FROM usuarios WHERE id = ?',
-                (usuario_id,)
-            )
-            pref = cursor.fetchone()
-
-        # Importar streamlit aqui para evitar circular
-        import streamlit as st
-
-        if pref:
-            tema = pref['tema_preferido'] if pref['tema_preferido'] in ['escuro', 'claro'] else "escuro"
-            moeda = pref['moeda_preferida'] if pref['moeda_preferida'] in ['BRL', 'USD', 'EUR', 'GBP'] else "BRL"
-            cor_primaria = pref['cor_primaria'] if pref['cor_primaria'] else '#3d8bfd'
-
-            st.session_state.tema = tema
-            st.session_state.moeda = moeda
-            st.session_state.cor_primaria = cor_primaria
-            st.session_state.security_level = "Alta"
-            
-            # Se houver tema personalizado completo, carregar
-            if pref['tema_personalizado']:
-                try:
-                    tema_personalizado = json.loads(pref['tema_personalizado'])
-                    st.session_state.tema_cores = tema_personalizado.get('cores', {})
-                except:
-                    pass
-
-            logger.info(f"Preferências carregadas para usuário {usuario_id}: tema={tema}, moeda={moeda}")
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        # Verificar se já existe registro
+        cursor.execute('''
+            SELECT id FROM preferencias_tema WHERE usuario_id = ?
+        ''', (usuario_id,))
+        
+        existe = cursor.fetchone()
+        
+        # Converter cores para JSON se for string
+        if isinstance(cores_json, dict):
+            cores_json = json.dumps(cores_json)
+        
+        if existe:
+            cursor.execute('''
+                UPDATE preferencias_tema 
+                SET tema_id = ?, modo = ?, cores_json = ?, data_atualizacao = CURRENT_TIMESTAMP
+                WHERE usuario_id = ?
+            ''', (tema_id, modo, cores_json, usuario_id))
         else:
-            # Valores padrão
-            st.session_state.tema = "escuro"
-            st.session_state.moeda = "BRL"
-            st.session_state.cor_primaria = '#3d8bfd'
-            st.session_state.security_level = "Alta"
-            logger.warning(f"Usuário {usuario_id} não encontrado, usando valores padrão")
-
+            cursor.execute('''
+                INSERT INTO preferencias_tema (usuario_id, tema_id, modo, cores_json)
+                VALUES (?, ?, ?, ?)
+            ''', (usuario_id, tema_id, modo, cores_json))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
     except Exception as e:
-        logger.error(f"Erro ao carregar preferências: {e}")
-        # Garantir valores padrão
-        import streamlit as st
-        st.session_state.tema = "escuro"
-        st.session_state.moeda = "BRL"
-        st.session_state.cor_primaria = '#3d8bfd'
-        st.session_state.security_level = "Média"
-
-def salvar_preferencias_usuario(usuario_id: int, tema: Optional[str] = None, 
-                                moeda: Optional[str] = None, cor_primaria: Optional[str] = None,
-                                tema_completo: Optional[Dict] = None) -> bool:
-    """Salva preferências do usuário"""
-    try:
-        with get_db_cursor() as cursor:
-            updates = []
-            params = []
-            
-            if tema:
-                updates.append('tema_preferido = ?')
-                params.append(tema)
-            
-            if moeda:
-                updates.append('moeda_preferida = ?')
-                params.append(moeda)
-            
-            if cor_primaria:
-                updates.append('cor_primaria = ?')
-                params.append(cor_primaria)
-            
-            if tema_completo:
-                updates.append('tema_personalizado = ?')
-                params.append(json.dumps(tema_completo))
-            
-            if updates:
-                updates.append('updated_at = CURRENT_TIMESTAMP')
-                params.append(usuario_id)
-                query = f'UPDATE usuarios SET {", ".join(updates)} WHERE id = ?'
-                cursor.execute(query, params)
-                
-                logger.info(f"Preferências atualizadas para usuário {usuario_id}")
-                return True
-            
-            return False
-
-    except Exception as e:
-        logger.error(f"Erro ao atualizar preferências: {e}")
+        logger.error(f"Erro ao salvar preferências de tema: {e}")
         return False
+
+
+def carregar_preferencias_tema(usuario_id: int):
+    """Carrega as preferências de tema do usuário"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT tema_id, modo, cores_json FROM preferencias_tema WHERE usuario_id = ?
+        ''', (usuario_id,))
+        
+        resultado = cursor.fetchone()
+        conn.close()
+        
+        if resultado:
+            return {
+                'tema_id': resultado[0],
+                'modo': resultado[1],
+                'cores': json.loads(resultado[2]) if resultado[2] else {}
+            }
+        return None
+        
+    except Exception as e:
+        logger.error(f"Erro ao carregar preferências de tema: {e}")
+        return None
     
+
+def criar_tabela_preferencias_tema():
+    """Cria a tabela de preferências de tema no banco de dados"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS preferencias_tema (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER NOT NULL UNIQUE,
+                tema_id TEXT DEFAULT 'default',
+                modo TEXT DEFAULT 'escuro',
+                cores_json TEXT,
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Tabela preferencias_tema criada")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro ao criar tabela preferencias_tema: {e}")
+        return False
+
 def registrar_usuario(email: str, senha: str, nome: str) -> Tuple[bool, str]:
     """Registra novo usuário - VERSÃO SIMPLIFICADA SEM ERROS"""
     try:
@@ -1691,42 +1694,7 @@ def registrar_usuario(email: str, senha: str, nome: str) -> Tuple[bool, str]:
         logger.error(f"Erro ao registrar usuário: {e}")
         return False, f"Erro: {str(e)}"
     
-    
-def atualizar_perfil_usuario(usuario_id: int, dados: Dict[str, Any]) -> Tuple[bool, str]:
-    """Atualiza dados do perfil do usuário"""
-    try:
-        conn = criar_conexao()
-        cursor = conn.cursor()
-        
-        # Construir query dinamicamente
-        campos = []
-        valores = []
-        
-        campos_permitidos = ['nome', 'telefone', 'cargo', 'foto_perfil', 'data_nascimento']
-        
-        for campo in campos_permitidos:
-            if campo in dados:
-                campos.append(f"{campo} = ?")
-                valores.append(dados[campo])
-        
-        if not campos:
-            conn.close()
-            return False, "Nenhum dado para atualizar"
-        
-        valores.append(usuario_id)
-        query = f"UPDATE usuarios SET {', '.join(campos)} WHERE id = ?"
-        
-        cursor.execute(query, valores)
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"✅ Perfil do usuário {usuario_id} atualizado")
-        return True, "Perfil atualizado com sucesso!"
-        
-    except Exception as e:
-        logger.error(f"❌ Erro ao atualizar perfil: {e}")
-        return False, f"Erro: {str(e)}"
-# Adicione esta função e chame no inicializar_banco
+
 def adicionar_coluna_foto_perfil():
     """Adiciona coluna foto_perfil na tabela usuarios"""
     try:
@@ -1809,14 +1777,131 @@ def alterar_senha(usuario_id: int, senha_atual: str, nova_senha: str) -> Tuple[b
             "ERROR"
         )
         return False, f"Erro interno: {str(e)}"
+# ============= FUNÇÕES DE USUÁRIOS (CORRIGIDAS) =============
 
-def obter_dados_usuario(usuario_id: int) -> Optional[Dict]:
-    """Obtém dados do usuário"""
+def carregar_preferencias_usuario(usuario_id: int):
+    """Carrega preferências do usuário do banco - VERSÃO CORRIGIDA (SEM ST)"""
     try:
         with get_db_cursor() as cursor:
             cursor.execute('''
-                SELECT nome, email, data_criacao, tema_preferido, moeda_preferida,
-                       empresa_id, nivel_acesso
+                SELECT tema_preferido, moeda_preferida, cor_primaria, tema_personalizado, 
+                       foto_perfil, telefone, cargo 
+                FROM usuarios 
+                WHERE id = ?
+            ''', (usuario_id,))
+            pref = cursor.fetchone()
+
+        # Retornar os dados em vez de usar st diretamente
+        if pref:
+            return {
+                'tema_preferido': pref['tema_preferido'] if pref['tema_preferido'] in ['escuro', 'claro'] else "escuro",
+                'moeda_preferida': pref['moeda_preferida'] if pref['moeda_preferida'] in ['BRL', 'USD', 'EUR', 'GBP'] else "BRL",
+                'cor_primaria': pref['cor_primaria'] if pref['cor_primaria'] else '#3d8bfd',
+                'tema_personalizado': json.loads(pref['tema_personalizado']) if pref['tema_personalizado'] else None,
+                'foto_perfil': pref['foto_perfil'],
+                'telefone': pref['telefone'],
+                'cargo': pref['cargo']
+            }
+        else:
+            return None
+
+    except Exception as e:
+        logger.error(f"Erro ao carregar preferências: {e}")
+        return None
+
+
+def salvar_preferencias_usuario(usuario_id: int, tema: Optional[str] = None, 
+                                moeda: Optional[str] = None, cor_primaria: Optional[str] = None,
+                                tema_completo: Optional[Dict] = None) -> bool:
+    """Salva preferências do usuário no banco"""
+    try:
+        with get_db_cursor() as cursor:
+            updates = []
+            params = []
+            
+            if tema is not None:
+                updates.append('tema_preferido = ?')
+                params.append(tema)
+            
+            if moeda is not None:
+                updates.append('moeda_preferida = ?')
+                params.append(moeda)
+            
+            if cor_primaria is not None:
+                updates.append('cor_primaria = ?')
+                params.append(cor_primaria)
+            
+            if tema_completo is not None:
+                updates.append('tema_personalizado = ?')
+                params.append(json.dumps(tema_completo))
+            
+            if updates:
+                updates.append('updated_at = CURRENT_TIMESTAMP')
+                params.append(usuario_id)
+                query = f'UPDATE usuarios SET {", ".join(updates)} WHERE id = ?'
+                cursor.execute(query, params)
+                
+                logger.info(f"Preferências atualizadas para usuário {usuario_id}")
+                return True
+            
+            return False
+
+    except Exception as e:
+        logger.error(f"Erro ao atualizar preferências: {e}")
+        return False
+
+
+def atualizar_perfil_usuario(usuario_id: int, dados: Dict[str, Any]) -> Tuple[bool, str]:
+    """Atualiza dados do perfil do usuário - VERSÃO CORRIGIDA (SEM ST)"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        # Verificar colunas disponíveis
+        cursor.execute("PRAGMA table_info(usuarios)")
+        colunas_existentes = [col[1] for col in cursor.fetchall()]
+        
+        campos = []
+        valores = []
+        
+        campos_permitidos = ['nome', 'telefone', 'cargo', 'foto_perfil']
+        
+        for campo in campos_permitidos:
+            if campo in dados and dados[campo] is not None:
+                if campo in colunas_existentes:
+                    campos.append(f"{campo} = ?")
+                    valores.append(dados[campo])
+        
+        if not campos:
+            conn.close()
+            return False, "Nenhum dado para atualizar"
+        
+        # Só adicionar updated_at se a coluna existir
+        if 'updated_at' in colunas_existentes:
+            campos.append("updated_at = CURRENT_TIMESTAMP")
+        
+        valores.append(usuario_id)
+        query = f"UPDATE usuarios SET {', '.join(campos)} WHERE id = ?"
+        
+        cursor.execute(query, valores)
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Perfil do usuário {usuario_id} atualizado")
+        return True, "Perfil atualizado com sucesso!"
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar perfil: {e}")
+        return False, f"Erro: {str(e)}"
+
+
+def obter_dados_usuario(usuario_id: int) -> Optional[Dict]:
+    """Obtém dados do usuário incluindo foto_perfil"""
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute('''
+                SELECT id, nome, email, data_criacao, tema_preferido, moeda_preferida,
+                       empresa_id, nivel_acesso, foto_perfil, telefone, cargo
                 FROM usuarios 
                 WHERE id = ?
             ''', (usuario_id,))
@@ -1827,6 +1912,75 @@ def obter_dados_usuario(usuario_id: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Erro ao obter dados do usuário: {e}")
         return None
+
+
+def adicionar_coluna_updated_at():
+    """Adiciona a coluna updated_at na tabela usuarios se não existir"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        cursor.execute("PRAGMA table_info(usuarios)")
+        colunas = cursor.fetchall()
+        colunas_nomes = [col[1] for col in colunas]
+        
+        if 'updated_at' not in colunas_nomes:
+            cursor.execute('ALTER TABLE usuarios ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            conn.commit()
+            logger.info("✅ Coluna updated_at adicionada")
+            return True
+        else:
+            logger.info("ℹ️ Coluna updated_at já existe")
+            return False
+        
+    except Exception as e:
+        logger.error(f"Erro ao adicionar updated_at: {e}")
+        return False
+
+
+def adicionar_coluna_data_atualizacao_cotacoes():
+    """Adiciona a coluna data_atualizacao na tabela cotacoes se não existir"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        cursor.execute("PRAGMA table_info(cotacoes)")
+        colunas = cursor.fetchall()
+        colunas_nomes = [col[1] for col in colunas]
+        
+        if 'data_atualizacao' not in colunas_nomes:
+            cursor.execute('ALTER TABLE cotacoes ADD COLUMN data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            conn.commit()
+            logger.info("✅ Coluna data_atualizacao adicionada na tabela cotacoes")
+            return True
+        else:
+            return False
+        
+    except Exception as e:
+        logger.error(f"Erro ao adicionar data_atualizacao: {e}")
+        return False
+
+def adicionar_coluna_data_atualizacao_cotacoes():
+    """Adiciona a coluna data_atualizacao na tabela cotacoes se não existir"""
+    try:
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        cursor.execute("PRAGMA table_info(cotacoes)")
+        colunas = cursor.fetchall()
+        colunas_nomes = [col[1] for col in colunas]
+        
+        if 'data_atualizacao' not in colunas_nomes:
+            cursor.execute('ALTER TABLE cotacoes ADD COLUMN data_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            conn.commit()
+            logger.info("✅ Coluna data_atualizacao adicionada na tabela cotacoes")
+            return True
+        else:
+            return False
+        
+    except Exception as e:
+        logger.error(f"Erro ao adicionar data_atualizacao: {e}")
+        return False
 
 def atualizar_nome_usuario(usuario_id: int, novo_nome: str) -> bool:
     """Atualiza nome do usuário"""
@@ -2419,7 +2573,45 @@ def gerar_token_recuperacao(email: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Erro ao gerar token: {e}")
         return None
-
+def atualizar_cotacao(usuario_id: int, cotacao_id: int, nome: str, origem: str, destino: str) -> Tuple[bool, str]:
+    """Atualiza uma cotação existente"""
+    try:
+        nome = nome.strip()
+        origem = origem.strip()
+        destino = destino.strip()
+        
+        if len(nome) < 3:
+            return False, "Nome da cotação deve ter pelo menos 3 caracteres"
+        
+        if len(nome) > 100:
+            return False, "Nome da cotação muito longo"
+        
+        if not origem or not destino:
+            return False, "Origem e destino são obrigatórios"
+        
+        conn = criar_conexao()
+        cursor = conn.cursor()
+        
+        # Verificar se a cotação pertence ao usuário
+        cursor.execute('SELECT id FROM cotacoes WHERE id = ? AND usuario_id = ?', (cotacao_id, usuario_id))
+        if not cursor.fetchone():
+            conn.close()
+            return False, "Cotação não encontrada ou acesso negado"
+        
+        cursor.execute('''
+        UPDATE cotacoes 
+        SET nome = ?, origem = ?, destino = ?, data_atualizacao = CURRENT_TIMESTAMP
+        WHERE id = ? AND usuario_id = ?
+        ''', (nome, origem, destino, cotacao_id, usuario_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return True, "Cotação atualizada com sucesso!"
+    except Exception as e:
+        logger.error(f"Erro ao atualizar cotação: {e}")
+        return False, f"Erro: {str(e)}"
+    
 def validar_token_recuperacao(token: str) -> Tuple[bool, Optional[str]]:
     """Valida token de recuperação"""
     try:
@@ -3214,33 +3406,39 @@ def atualizar_preferencias_usuario(usuario_id: int, tema: Optional[str] = None,
                                    moeda: Optional[str] = None, **kwargs) -> bool:
     """Atualiza preferências do usuário (alias para salvar_preferencias_usuario)"""
     return salvar_preferencias_usuario(usuario_id, tema=tema, moeda=moeda, **kwargs)
-
-
 def atualizar_perfil_usuario(usuario_id: int, dados: Dict[str, Any]) -> Tuple[bool, str]:
-    """Atualiza perfil do usuário (nome, telefone, cargo, foto)"""
+    """Atualiza dados do perfil do usuário - VERSÃO CORRIGIDA (SEM ST)"""
     try:
         conn = criar_conexao()
         cursor = conn.cursor()
         
-        updates = []
-        params = []
+        # Verificar colunas disponíveis
+        cursor.execute("PRAGMA table_info(usuarios)")
+        colunas_existentes = [col[1] for col in cursor.fetchall()]
+        
+        campos = []
+        valores = []
         
         campos_permitidos = ['nome', 'telefone', 'cargo', 'foto_perfil']
         
         for campo in campos_permitidos:
             if campo in dados and dados[campo] is not None:
-                updates.append(f"{campo} = ?")
-                params.append(dados[campo])
+                if campo in colunas_existentes:
+                    campos.append(f"{campo} = ?")
+                    valores.append(dados[campo])
         
-        if not updates:
+        if not campos:
             conn.close()
             return False, "Nenhum dado para atualizar"
         
-        updates.append("updated_at = CURRENT_TIMESTAMP")
-        params.append(usuario_id)
+        # Só adicionar updated_at se a coluna existir
+        if 'updated_at' in colunas_existentes:
+            campos.append("updated_at = CURRENT_TIMESTAMP")
         
-        query = f"UPDATE usuarios SET {', '.join(updates)} WHERE id = ?"
-        cursor.execute(query, params)
+        valores.append(usuario_id)
+        query = f"UPDATE usuarios SET {', '.join(campos)} WHERE id = ?"
+        
+        cursor.execute(query, valores)
         conn.commit()
         conn.close()
         
@@ -3248,9 +3446,9 @@ def atualizar_perfil_usuario(usuario_id: int, dados: Dict[str, Any]) -> Tuple[bo
         return True, "Perfil atualizado com sucesso!"
         
     except Exception as e:
-        logger.error(f"Erro ao atualizar perfil: {e}")
+        logger.error(f"❌ Erro ao atualizar perfil: {e}")
         return False, f"Erro: {str(e)}"
-
+    
 
 def redefinir_senha(email: str, nova_senha: str) -> Tuple[bool, str]:
     """Redefine senha (wrapper para compatibilidade com app.py)"""
